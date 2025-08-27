@@ -26,6 +26,7 @@ CHROOT="/mnt"
 # }
 
 log() {
+    # set +x
     local level=$1; shift
     local msg="$*"
     local ts="$(date '+%Y-%m-%d %H:%M:%S')"
@@ -40,6 +41,7 @@ log() {
 
     # Save plain version to log file (no colors)
     echo "$line" >> "$LOG_FILE"
+    # set -x
 
 }
 
@@ -52,6 +54,7 @@ log INFO "🚀 Welcome to the Arch Linux Installer v1"
 
 # ------------------ DEVICE SETUP ------------------
 device_id=${1:?Usage: $0 <device_id>}
+#device_id=/dev/nvme0n1
 log INFO "💽 Target install disk: ${device_id}"
 # if [ -z "$device_id" ]; then
 #     log ERROR "error: provide disk to insstall";
@@ -66,87 +69,40 @@ log INFO "💽 Target install disk: ${device_id}"
 # # iwctl station wlan0 connect ""
 # log INFO "connected"
 
+# Load config
+CONFIG_FILE="./config.conf"
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+else
+    echo "Config file not found!"
+    exit 1;
+fi
 
-boot_partition=${device_id}p1
-swap_partition=${device_id}p2
-root_partition=${device_id}p3
-home_partition=${device_id}p4
+
+REQUIRED_VARS=("BOOTPART" "SWAPPART" "ROOTPART" "HOMEPART")
+
+for var in "${REQUIRED_VARS[@]}"; do
+    if [[ -z "${!var}" ]]; then
+        log ERROR "❌ Error: $var is not set in $CONFIG_FILE"
+        exit 1
+    fi
+done
+
+# Assign partitions
+boot_partition=$BOOTPART
+swap_partition=$SWAPPART
+root_partition=$ROOTPART
+home_partition=$HOMEPART
+
+# ------------------ DEBUG PRINT ------------------
+log INFO "Boot partition: $boot_partition"
+log INFO "Swap partition: $swap_partition"
+log INFO "Root partition: $root_partition"
+log INFO "Home partition: $home_partition"
+
 
 # Cleanup
 lsblk $device_id
-log INFO "🧹 Cleaning old partitions and mounts..."
-
-# log INFO "removing old mounts if any"
-
-# umount -l -R /mnt/boot/efi 2>/dev/null || true
-# umount -l -R  /mnt/home 2>/dev/null || true
-# umount -l -R  /mnt/ 2>/dev/null || true
-# swapoff "$swap_partition" 2>/dev/null || true
-# log INFO "removing old mounts for $device_id if any"
-
-
-# Unmount all partitions of the device (by device, not just /mnt paths)
-# for p in $(lsblk -ln -o NAME "$device_id" | tail -n +2); do
-#     dev="/dev/$p"
-#     while mount | grep -q "^$dev "; do
-#         mp=$(mount | awk -v dev="$dev" '$1 == dev {print $3; exit}')
-#         log INFO "Force unmounting $dev from $mp"
-#         umount -l -f "$mp" 2>/dev/null || true
-#     done
-# done
-
-# log INFO "removing old mounts for $device_id if any"
-
-# # Collect all mount points of this device, sort by path depth (deepest first)
-# for mp in $(mount | awk -v dev="$device_id" '$1 ~ "^"dev {print $3}' | awk '{print length, $0}' | sort -rn | cut -d' ' -f2-); do
-#     log INFO "Force unmounting $mp"
-#     umount -l -f "$mp" 2>/dev/null || true
-# done
-
-
-# # Disable swap if active
-# for p in $(swapon --show=NAME --noheadings); do
-#     if [[ $p == ${device_id}* ]]; then
-#         log INFO "Disabling swap on $p"
-#         swapoff "$p" 2>/dev/null || true
-#     fi
-# done
-
-# log INFO "swap unmounted"
-
-swapoff -a || true
-mount | grep "$device_id" | awk '{print $3}' | xargs -r -n1 umount -lf || true
-sgdisk --zap-all --clear "$device_id"
-dd if=/dev/zero of="$device_id" bs=1M count=10 conv=fsync,notrunc oflag=direct
-dd if=/dev/zero of="$device_id" bs=1M count=10 seek=$(( $(blockdev --getsz "$device_id") / 2048 - 10 )) conv=fsync,notrunc oflag=direct
-# for p in $(lsblk -ln -o NAME "$device_id" | tail -n +2); do
-#     umount -f "/dev/$p" 2>/dev/null || true
-# done
-log INFO "✔ Device cleanup complete"
-lsblk
-
-log INFO "📐 Creating GPT disk..."
-# ------------------ PARTITIONING ------------------
-log INFO "📐 Starting disk partitioning on $device_id..."
-parted "$device_id" print
-
-log INFO "📝 Converting disk to GPT..."
-parted -s "$device_id" mklabel gpt
-
-log INFO "🟦 Creating 1GB EFI System Partition..."
-parted -s "$device_id" mkpart primary fat32 1MiB 1025MiB
-
-log INFO "🔄 Creating 4GB Swap Partition..."
-parted -s "$device_id" mkpart primary linux-swap 1025MiB 5121MiB
-
-log INFO "📂 Creating Root Partition (up to 70% of disk)..."
-parted -s "$device_id" mkpart primary ext4 5121MiB 70%
-
-log INFO "🏠 Creating Home Partition (remaining space)..."
-parted -s "$device_id" mkpart primary ext4 70% 100%
-
-log INFO "✅ Partitioning complete. Final layout:"
-parted "$device_id" print
 
 # ------------------ FORMATTING ------------------
 log INFO "🧾 Formatting partitions..."
@@ -237,7 +193,7 @@ pacstrap -C ./pacman.custom.conf "$CHROOT" gcc make cmake git vim wget curl perl
 if lspci 2>/dev/null | grep -i -E "NVIDIA|Nvidia|nvidia" >/dev/null; then
     log INFO "🟢 NVIDIA GPU detected → Installing DKMS drivers..."
     pacstrap -C ./pacman.custom.conf "$CHROOT" \
-        nvidia-dkms nvidia-utils nvidia-settings nvidia-prime
+        nvidia-dkms nvidia-utils nvidia-settings nvidia-prime mkinitcpio
     arch-chroot "$CHROOT" mkinitcpio -P
     arch-chroot "$CHROOT" systemctl enable nvidia-persistenced.service
 
